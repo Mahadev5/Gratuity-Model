@@ -1,0 +1,635 @@
+---
+title: "Actuarial Valuation Report"
+author: "Tech Actuarial"
+date: "May 27, 2020"
+output: 
+
+    theme:  rmdformats::readthedown
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,digits=3,format.args  =list(scientific=FALSE,big.mark=","),message = FALSE,warning = FALSE)
+knitr.table.format = 'html'
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(YieldCurve)
+library(knitr)
+library(kableExtra)
+library(forestmangr)
+library(treemap)
+library(rmdformats)
+```
+
+
+
+
+
+
+
+***
+
+
+
+***
+
+
+## 1 Abstract
+
+### 1.1 Overview
+
+### 1.2 Data 
+
+The data used for the Report has been provided by the Company and I take no responsibility for its accuracy as I have not undertaken extensive background checks. 
+
+### 1.3 Assumptions of Valuation
+
+
+The Assumptions used in the report are selected by the company. 
+
+The Actuarial Assumptions used in the report may be changed from one period to another depending on changing expectations, experience, changes in regulations or other factors.
+
+This Report should not be the sole basis for any decision taken about the benefit plan. 
+
+Due consideration must be given to alternatives and expected future movements in the market or any force that could cause the reality to be significantly different from assumptions made. 
+
+### 1.4 Signatory Actuary
+
+
+
+```{r LoadingData, warning=FALSE,include=FALSE}
+### Loading Data
+#Maximum gratuity as per Gratuity Act, 1972.
+M<-2000000
+#Demographic details
+emp_data<-read_excel("Emp Data.xlsx",col_names = TRUE,sheet = 1)
+str(emp_data)
+emp_data<-data.frame(emp_data)
+
+
+#The Life Table
+mortality<-read_excel("Actuarial Assumptions.xlsx",col_names = TRUE,sheet = 2)
+str(mortality)
+mortality<-data.frame(mortality)
+colnames(mortality[,1:2])<-c("x","qx")
+
+#Actuarial Assumptions
+assump<-read_excel("Actuarial Assumptions.xlsx",sheet = 1)
+str(assump)
+assump<-data.frame(assump)
+
+#Round function
+
+round_ps<-function(n)
+{
+  d=n-as.integer(n)
+  d[d>=0.5]<-1
+  d[d<0.5]<-0
+  return(as.integer(n)+d)
+  
+}
+# Calculations carried out on employee data
+#Age on relevant date
+relevant_date<-emp_data$Relevant..Date+days(1)
+int1<-interval(emp_data$date.of.joining,relevant_date)
+emp_data$PS<-round_ps(as.numeric(as.period(int1,unit = "years"),"years"))
+
+int2<-interval(emp_data$DATE.OF.BIRTH,relevant_date)
+emp_data$age<-round_ps(as.numeric(as.period(int2,unit = "years"),"years"))
+
+emp_data$decade<-as.character(as.integer(emp_data$age/10))
+date_r<-emp_data$Relevant..Date[1]
+period<-years(1)
+attrit<-as.numeric(assump[4,2])
+retire_age<-assump[2,2]
+```
+
+
+
+
+```{r Liability Projection}
+PVO_proj<-function(emp_data,assump,mortality)
+{  
+  
+Individual_calc<-function(curr)
+{
+  retire_age<-assump[2,2]
+  #'curr' is the current employee whose benefits are being computed 
+  duration<-seq(0,retire_age-17)
+  #Extracting Employee information from curr
+  sal=as.numeric(curr$Total.Salary.for.Gratuity)
+  PS=as.numeric(curr$PS)
+  age_r=as.numeric(curr$age)
+  attrit<-as.numeric(assump[4,2])
+  
+#curr_calc<-as.data.frame(duration,row.names = 1)
+#Age of the employee through the period of projection
+age<-age_r+duration
+#Years of service
+service<-duration+PS
+#mortlity as per the life table applicable to the employee
+mort<-mortality[-1*seq(1,age_r-14),][,2]
+mort<-mort[1:(retire_age-17)]
+#Expected Salary increments
+sal_inc<-(1+assump[3,2])^duration
+#Discount rates for duration
+disc<-(1+assump[1,2])^-duration
+
+Gratuity_Benefit<-pmin(M,15/26*sal*PS*sal_inc)
+#Probability that the employee doesnot leave the company, projection year wise
+surv<-rep(1,retire_age-17)
+#Attrition and death are exclusive  
+for (i in 2:(retire_age-17))
+{
+  surv[i]=surv[i-1]*(1-mort[i-1]-attrit)
+}
+surv
+
+#The PV of future benefit payable if the benefit payable is 1 unit per year.
+d_l<-(mort*(1-attrit)+attrit)*disc*surv
+d_l
+#Present Value of the benefit upon maturity if benefits payable was 1 unit per year.   
+maturity<-rep(0,retire_age-17)
+for (i in 1:(retire_age-17))
+{
+ if ((duration[i]+age_r)==(retire_age-1))
+   maturity[i]=surv[i+1]*disc[i]
+
+}  
+
+maturity
+#Scaling for a given salary
+Gratuity_Benefit[duration+age_r>retire_age]<-0
+total=(maturity+d_l)*Gratuity_Benefit
+
+mul=rep(1,retire_age-17)
+#mul[age>=assump[2,2]]<-0
+
+PSL_with<-Gratuity_Benefit*disc*attrit*surv
+PSL_with=mul*PSL_with
+PSL_death<-Gratuity_Benefit*disc*(1-attrit)*mort*surv
+PSL_death=mul*PSL_death
+PSL_death+PSL_with
+return(cbind(total,PSL_death+PSL_with))
+
+}
+
+future_ex_benefit=rep(0,length(emp_data$SL.NO))
+Projections<-NULL
+total_obligation=NULL
+for (emp in 1:length(emp_data$SL.NO))
+{
+  o<-Individual_calc(emp_data[emp,])
+  future_ex_benefit[emp]=sum(o[,1]) 
+  total_obligation<-cbind(total_obligation,o[,1])
+  Projections=cbind(Projections,o[,2])
+}
+Liability=rep(0,retire_age-17)
+for (i in 1:(retire_age-17))
+{
+  Liability[i]=sum(Projections[i,])
+}
+return(list(Projections,Liability,total_obligation,future_ex_benefit))
+}
+
+results<-PVO_proj(emp_data,assump,mortality)
+Projections<-results[[1]]
+Liability<-results[[2]]
+total_obligation<-results[[3]]
+future_ex_benefit<-results[[4]]
+
+
+########### For Sensitivity Analysis #######################
+
+int_rate_s<-assump[1,2]
+retire_age<-assump[2,2]
+inc_sal_s<-assump[3,2]
+attrit<-assump[4,2]
+
+assump[1,2]<-int_rate_s-0.01
+assump_int_rate<-assump
+assump[1,2]<-int_rate_s
+
+assump[2,2]<-retire_age+1
+assump_retire_inc<-assump
+assump[2,2]<-retire_age
+
+assump[2,2]<-retire_age-1
+assump_retire_dec<-assump
+assump[2,2]<-retire_age
+
+assump[3,2]<-inc_sal_s+0.01
+assump_sal_inc<-assump
+assump[3,2]<-inc_sal_s
+
+assump[4,2]<-attrit+0.05
+assump_attrit_inc<-assump
+assump[4,2]<-attrit
+
+assump[4,2]<-attrit-0.05
+assump_attrit_dec<-assump
+assump[4,2]<-attrit
+
+t=mortality
+mortality[,2]<-mortality[,2]*(1-0.99)
+mortality[,3]<-1-mortality[,2]
+mort_dec<-mortality
+mortality=t
+base_pvo<-sum(future_ex_benefit)
+int_rate<-PVO_proj(emp_data,assump_int_rate,mortality)
+int_rate<-sum(int_rate[[4]])
+retire_inc<-PVO_proj(emp_data,assump_retire_inc,mortality)
+retire_inc<-sum(retire_inc[[4]])
+retire_dec<-PVO_proj(emp_data,assump_retire_dec,mortality)
+retire_dec<-sum(retire_dec[[4]])
+inc_sal<-PVO_proj(emp_data,assump_sal_inc,mortality)
+inc_sal<-sum(inc_sal[[4]])
+attrit_inc<-PVO_proj(emp_data,assump_attrit_inc,mortality)
+attrit_inc<-sum(attrit_inc[[4]])
+attrit_dec<-PVO_proj(emp_data,assump_retire_dec,mortality)
+attrit_dec<-sum(attrit_dec[[4]])
+mort_dec<-PVO_proj(emp_data,assump,mort_dec)
+mort_dec<-sum(mort_dec[[4]])
+
+amounts<-c(base_pvo,
+int_rate,
+retire_inc,
+retire_dec,
+inc_sal,
+attrit_inc,
+attrit_dec,
+mort_dec)
+
+amounts_header<-c("Base PVO","-1% Discount rate","+1 year Retirement Age","-1 year Retirement  Age","+1% Rate of Salary Increase","+5% Attrition","-5% Attrition","-1% fall in mortality")
+amounts_header<-factor(amounts_header,levels = amounts_header)
+amounts_df<-as.data.frame(factor(rev(amounts_header)))
+amounts_df$amounts<-amounts/100000
+
+```
+
+
+
+
+
+```{r Assets Projection,message=FALSE}
+assets<-read_excel("Emp Data.xlsx",sheet = 2)
+gb<-read_excel("Actuarial Assumptions.xlsx",sheet = 3)
+gb$months<-gb$Term*12
+p<-Svensson( gb$Yield, gb$Term )
+
+#The Nielson Siegel Svensson parametric formula 
+
+Smooth<-function(p,Term)
+{
+  R<-p[1]+((p[2]+p[3])*((1-exp(-gb$Term/p[5]))/(gb$Term/p[5]))-p[3]*exp(-gb$Term/p[5])+p[4]*((1-exp(-gb$Term/p[6]))/(gb$Term/p[6]))-p[4]*exp(-gb$Term/p[6]))
+  return(R)
+} 
+gb$SmoothRates<-Smooth(p,gb$Term)
+
+gb$forwardYields<-gb$SmoothRates[1]
+for (i in 1:(retire_age-17))
+{
+  gb$forwardYields[i]<-(1+gb$SmoothRates[i])^(i)/(1+gb$SmoothRates[i])^(i-1)-1
+}
+#Assuming no return from the investment in the BANK ACCOUNT
+#The amount at the begining of the period
+
+Projected_Assets<-matrix(0,nrow = retire_age-17,ncol = 8)
+Projected_Assets[1,]=t(assets[,2])
+#At the begining of i th period
+for (j in c(1,2,3,4,5,6,8)) 
+{  
+
+    Projected_Assets[2,j]=Projected_Assets[1,j]*(1+gb$forwardYields[1])
+}
+# For the Bank account
+
+Projected_Assets[,7]=rep(Projected_Assets[1,7],retire_age-17)
+Projected_Assets<-as.data.frame(Projected_Assets) 
+colnames(Projected_Assets)=t(assets[,1])
+
+```
+## 2 Benefit Plan and Actuarial Methodology
+
+### 2.1 Benefit Plan  
+
+Below are the details of the Plan Valued
+
+```{r}
+Particulars<-c("Type of Plan","Employer's Contribution","Employee Contibution","Salary for calculation of Gratuity","Normal Retirement Age","Vesting Period","Benefit on normal Retirement","Benefit on leaving service earlier than Retirement (Not Death)","Benefit on death during service","Limit","Gratuity Formula")
+
+Details<-c("Defined Benefit","100%","-","Salary upon leaving service (Any Reason)",paste(retire_age,"years"),"5 years","Based on the Gratuity Act 1972, Indian Parliament (latest amendment)","Same as normal retirement, but the benefit is computed on the basis of date of leaving service","Same as normal retirement with no vesting period applicable",as.character(M),"15/26 * Last drawn salary * Number of years of Past service")
+
+table_benefits<-as.data.frame(cbind(Particulars,Details))
+kable(table_benefits) %>% row_spec(seq(1,dim(table_benefits)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_benefits)[1],2),color = "black",background = " #d6eaf8 ")
+```
+
+### 2.2 Actuarial Methodology
+
+#### Project Unit Credit Method
+
+
+
+
+
+
+## 3 Valuation Assumptions
+
+### 3.1 Financial Assumptions
+
+```{r Financial Assumptions,me2ssage=FALSE }
+d=seq.Date(as.Date(date_r),length.out = 2,by = '-3 months')
+date_header<-c("Particulars",as.character(d[2]),as.character(d[1]))
+temp=assump[c(1,3),]
+temp<-rbind(temp,c("Expected Return on Assets",round(gb$forwardYields[1],2)))
+temp<-as.data.frame(temp)
+ptemp=read_excel("Emp Data.xlsx",col_names = TRUE,sheet = 3)
+ptemp1=ptemp[c(1,3,5),]
+Fin_Ass<-cbind(ptemp1,temp[,2])
+Fin_Ass<-`colnames<-`(Fin_Ass,c("Particulars",as.character(date_r-period),as.character(date_r)))
+kable(Fin_Ass,format = "html",format.args = list(width=NULL),align = c("l","c","c"),row.names = FALSE) %>% 
+  add_header_above(c(" "=1,"For period ending on"=2)) %>% kable_styling(position = "center") %>% row_spec(seq(1,dim(Fin_Ass)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(Fin_Ass)[1],2),color = "black",background = " #d6eaf8 ")%>% scroll_box(width = "1000px", height = "400px") 
+```
+### 3.2 Demographic Assumptions
+
+The Company was advised that the assumptions have to be set according to the Paragraph 73 to 91 of the Accountancy Standards 15 (Revised 2015).
+
+### Attritiona and Retirement Age
+```{r Attrition and Retirement Age}
+t1=assump[c(2,4),]
+t2=ptemp[c(2,4),]
+t1[2,2]=paste(as.character(t1[2,2]*100),"%")
+t2_attrit<-unlist(paste(t2[2,2]*100,"%"))
+t2_r<-unlist(t2[1,2])
+t2=t2[,1]
+t2$..2<-c(t2_r,t2_attrit)
+Demo_Ass<-cbind(t2,t1[,2])
+Demo_Ass<-`colnames<-`(Demo_Ass,date_header)
+kable(Demo_Ass,format = "html",format.args = list(width=NULL),row.names = FALSE,align = c("l","c","c")) %>% 
+  add_header_above(c(" "=1,"For period ending on"=2)) %>% kable_styling(position = "center") %>% row_spec(seq(1,dim(Demo_Ass)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(Demo_Ass)[1],2),color = "black",background = " #d6eaf8 ")%>% scroll_box(width = "1000px", height = "400px")  
+
+
+
+```
+
+
+### Assumed Mortality Rates: ***Indian Assured Lives Mortality 2016***
+
+No Adjustment were made on the Life Table data
+
+```{r Mortality}
+
+M<-cbind(mortality$Age..x.,mortality$Mortality.rate..qx.)
+M<-`colnames<-`(M,c("Age(x)","Mortality(qx)"))
+kable(M,format="html",row.names = FALSE) %>% row_spec(seq(1,dim(M)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(M)[1],2),color = "black",background = " #d6eaf8 ")%>% scroll_box(width = "1000px", height = "400px")  
+
+
+```
+
+
+
+
+## 4 Employee Statitics
+
+### 4.1 Summary Statitics
+```{r Employee Statistics,message=FALSE}
+Stats<-emp_data %>% summarise(No_of_Employees=n(),Service_Years_Valued=sum(PS),Average_Past_Service=round(mean(PS),1),
+                              Mean_Salary=round(mean(Total.Salary.for.Gratuity),1),
+                              Mean_Age=round(mean(age),1),Mean_Service_Years_Left=round(mean(assump[2,2]-age),1),
+                              Total_Monthly_Salary=round(sum(Total.Salary.for.Gratuity),1))
+
+PastStats<-read_excel("Emp Data.xlsx",sheet = 4)
+Stats<-t(as.matrix(Stats[1,]))
+Final<-cbind(PastStats,as.vector(Stats[,1]))
+Final<-`colnames<-`(Final,date_header)
+kable(Final,format.args = list(scientific=FALSE),format = "html") %>% 
+  kable_styling(position = "center") %>% row_spec(seq(1,dim(Final)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(Final)[1],2),color = "black",background = " #d6eaf8 ")  %>%
+  add_header_above(c(" "=1,"For period ending on"=2),align = "center")
+
+```
+### 4.2 Age Analysis
+```{r Age Analysis}
+age_analysis<-emp_data %>% group_by(The_Decade_of_Life=decade)%>% summarise(No_of_Employees=length(decade))
+kable(age_analysis,format = "html",row.names = FALSE,align = c("c","c")) %>% kable_styling(position = "center") %>% row_spec(seq(1,dim(age_analysis)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(age_analysis)[1],2),color = "black",background = " #d6eaf8 ")%>% scroll_box(width = "1000px", height = "400px")  
+
+D_PS<-emp_data %>% group_by(Past_Service=PS)
+
+ggplot(aes(x=decade,fill=as.character(PS)),data=emp_data)+geom_bar()+scale_fill_discrete(name="Past Service")+xlab("Decade of Life")+ylab("Number of Employees")+ggtitle("The distribution of Past Service age wise")
+
+ggplot(data = D_PS,aes(x=PS))+geom_bar(fill="light blue")+ylab("Number of Employees")+xlab("Number of years of past service")+ggtitle("Number of Years of Past service")
+
+ggplot(aes(x=PS,fill=decade),data =emp_data)+geom_bar(show.legend = TRUE)+xlab("Number of years of past service")+ggtitle("Number of employees their Past service and age")+ylab("Number of Employees")+scale_fill_discrete(name="Decade of Life")
+```
+
+
+
+\  
+
+## 5 Valuation Results
+
+### 5.1 Changes is Present Value of Obligation
+```{r PVO}
+
+date_header<-c("Particulars",as.character(date_r-period),as.character(date_r))
+PVO<-read_excel("Emp Data.xlsx",sheet = 5,col_names = TRUE)
+#PVO @ the begining
+PVO[1,3]<-PVO[9,2]
+#Current Service Cost
+n<-length(emp_data$SL.NO)
+s=rep(0,n)
+for (j in 1:n)  
+{
+  age<-emp_data[j,]$age
+  mort<-mortality[-1*seq(1,age-14),][,2]
+  mort<-mort[1:(retire_age-17)]
+  surv<-rep(1,retire_age-17)
+  for (i in 2:(retire_age-17))
+  {
+  surv[i]=surv[i-1]*(1-mort[i-1]-attrit)
+  }
+  s[j]=sum(surv)-1
+}
+csc<-future_ex_benefit/(emp_data$PS+s)
+PVO[5,3]<-sum(csc)
+
+#Interest Cost
+d_rate<-assump[1,2]
+ic<-(PVO[1,3]-0.5*Liability[1])*d_rate
+PVO[3,3]<-ic
+
+#PVO @ end
+
+PVO_end<-sum(future_ex_benefit)
+PVO[9,3]=PVO_end
+
+# Actuarial Gain Loss
+
+act_gl_PVO<-PVO[9,3]-sum(PVO[1:7,3])
+PVO[8,3]<-act_gl_PVO
+
+#The Table
+
+table_PVO<-`colnames<-`(PVO,date_header)
+kable(table_PVO)%>% 
+  add_header_above(c(" "=1,"For period ending on"=2)) %>% kable_styling(position = "center") %>% row_spec(seq(1,dim(table_PVO)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_PVO)[1],2),color = "black",background = " #d6eaf8 ")
+```
+### 5.2 Changes is Fair Value of Plan Assets
+
+```{r Asset FVA}
+
+FVA_all<-read_excel("Emp Data.xlsx",sheet = 6)
+FVA<-FVA_all[1:8,]
+
+#Expected Return on Assets
+
+ex_r_return_assets<-gb$forwardYields[1]
+ex_return_assets<-ex_r_return_assets*FVA[1,3]
+FVA[3,3]<-ex_return_assets
+
+# ACtuarial Gain Loss
+act_gl_FVA<-FVA[8,3]-sum(FVA[1:6,3])
+FVA[7,3]<-act_gl_FVA
+
+table_FVA<-`colnames<-`(FVA,date_header)
+kable(table_FVA) %>%  row_spec(seq(1,dim(table_FVA)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_FVA)[1],2),color = "black",background = " #d6eaf8 ") %>% kable_styling(position = "center")
+```
+
+
+### 5.3 Value of Plan Assets 
+```{r Value of PA}
+row_names<-FVA[1:8,1:3]
+VPA<-rbind(row_names[1:3,],"Actual Return on Plan Assets",row_names[c(4:6,8),])
+VPA[4,2]<-as.character(round(FVA_all[9,2]),1)
+#VPA$`42825`<-as.numeric(VPA$`42825`)
+VPA[4,3]<-as.character(round(FVA_all[9,3]),1)
+#VPA$`43190`<-as.numeric(VPA$`43190`)
+#VPA[4,3]<-VPA[4,3]*-1
+#VPA[4,2]<-VPA[4,2]*-1
+table_VPA<-`colnames<-`(VPA,date_header)
+kable(table_VPA)%>% 
+  add_header_above(c(" "=1,"For period ending on"=2)) %>% kable_styling(position = "center") %>% row_spec(seq(1,dim(table_VPA)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_VPA)[1],2),color = "black",background = " #d6eaf8 ")
+```
+
+### 5.4 Expenses in the Profit Loss Account
+```{r Expenses in PL account}
+PL_Ac<-read_excel("Emp Data.xlsx",sheet = 7)
+#Current Service Cost
+PL_Ac[1,3]<-sum(csc)
+#Interest Cost
+PL_Ac[3,3]<-ic
+#Expected returns on Assets
+PL_Ac[4,3]<-ex_return_assets*-1
+#Act Gain Loss
+act_gl_PL<-PL_Ac[8,3]-sum(PL_Ac[1:5,3])
+PL_Ac[7,3]<-act_gl_PL
+table_PLAc<-`colnames<-`(PL_Ac,date_header)
+kable(table_PLAc) %>%
+  add_header_above(c(" "=1,"For period ending on"=2),align = "center") %>% kable_styling(position = "center")%>% row_spec(seq(1,dim(table_PLAc)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_VPA)[1],2),color = "black",background = " #d6eaf8 ")
+```
+### 5.5 Amount for the current period
+```{r Current Period}
+row_cp<-c("Actuarial Gain/Loss - Present Value of Obligation",
+"% of PVO @ begining",
+"Actuarial Gain/Loss - Fair Value of Plan Assets",
+"% of FVA @ begining",
+"Total Actuarial Gain/Loss",
+"Unrecognized Actuarial Gain/Loss",
+"Experience Adjustment on the PVO	",
+"Experience Adjustment on the FVA")
+
+act_gl_pvo<-round(as.vector(unlist(PVO[8,][,2:3])),1)
+pvo<-as.vector(unlist(PVO[1,][,2:3]))
+act_gl_pvo_prop<-round(abs(act_gl_pvo/pvo*100),1)
+act_gl_fva<-round(as.vector(unlist(FVA[7,][,2:3])),1)
+fva<-round(as.vector(unlist(FVA[1,][,2:3])),1)
+act_gl_fva_prop<-round(abs(act_gl_fva/fva*100),1)
+total_act_gl<-act_gl_pvo-act_gl_fva
+exp_adj_fva<-act_gl_fva
+exp_adj_pvo<-act_gl_pvo
+act_gl_pvo<-c(row_cp[1],act_gl_pvo)
+act_gl_pvo_prop<-c(row_cp[2],act_gl_pvo_prop)
+act_gl_fva<-c(row_cp[3],act_gl_fva)
+act_gl_fva_prop<-c(row_cp[4],act_gl_fva_prop)
+total_act_gl<-c(row_cp[5],total_act_gl)
+u_act_gl<-c(row_cp[6],0,0)
+exp_adj_pvo<-c(row_cp[7],exp_adj_pvo)
+exp_adj_fva<-c(row_cp[8],exp_adj_fva)
+table_CURR_P<-rbind(act_gl_pvo,act_gl_pvo_prop,act_gl_fva,act_gl_fva_prop,total_act_gl,u_act_gl,exp_adj_pvo,exp_adj_fva)
+table_CURR_P<-as.data.frame(table_CURR_P)
+table_CURR_P<-`colnames<-`(table_CURR_P,date_header)
+kable(table_CURR_P,row.names = FALSE)%>% 
+  add_header_above(c(" "=1,"For period ending on"=2)) %>% kable_styling(position = "center")%>% row_spec(seq(1,dim(table_CURR_P)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_CURR_P)[1],2),color = "black",background = " #d6eaf8 ")
+```
+
+### 5.6 Changes in Liability recognized in the Balance Sheet
+```{r Changes in Liability}
+table_Changes_Liab<-rbind(PVO[1,],
+PL_Ac[8,],
+PVO[8,],
+PL_Ac[5:6,],
+VPA[2,],
+PVO[9,])
+table_Changes_Liab$`42825`<-as.numeric(table_Changes_Liab$`42825`)
+table_Changes_Liab$`43190`<-as.numeric(table_Changes_Liab$`43190`)
+table_Changes_Liab<-round_df(table_Changes_Liab)
+colnames(table_Changes_Liab)<-date_header
+kable(table_Changes_Liab) %>% kable_styling(position = "center") %>% add_header_above(c(" "=1,"For Period ending on"=2),align="center")%>% row_spec(seq(1,dim(table_Changes_Liab)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(table_Changes_Liab)[1],2),color = "black",background = " #d6eaf8 ")
+```
+
+### 5.7 Major Categories of Plan Assets 
+```{r Distribution of Plan Assets}
+asset_dist<-read_excel("Emp Data.xlsx",sheet = 2)
+colnames(asset_dist)<-c("Type of Asset",date_header[-1])
+asset_dist$`2017-03-31`<-as.numeric(asset_dist$`2017-03-31`)
+asset_dist$`2018-03-31`<-as.numeric(asset_dist$`2018-03-31`)
+prop<-prop.table(as.matrix(asset_dist[,2:3]),margin = 2)*100
+prop<-cbind(asset_dist[,1],prop)
+prop<-as.data.frame(prop)
+prop<-round_df(prop,1)
+kable(prop) %>% kable_styling(position = "center") %>% add_header_above(c(" "=1,"As % of total assets for Period ending on"=2),align="center") %>% row_spec(seq(1,dim(prop)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(prop)[1],2),color = "black",background = " #d6eaf8 ")
+```
+### 5.8 Current and non-current Obligation
+
+```{r Current Non-Current Obligation}
+curr_ncurr_liab<-read_excel("Emp Data.xlsx",sheet = 8)
+curr_liab<-sum(total_obligation[1,])
+ncurr_liab<-sum(total_obligation[-1,])
+curr_ncurr_liab[,3]<-c(curr_liab,ncurr_liab,ncurr_liab+curr_liab)
+colnames(curr_ncurr_liab)<-date_header
+kable(curr_ncurr_liab) %>% kable_styling(position = "center") %>% add_header_above(c(" "=1,"For period ending on"=2))  %>% row_spec(seq(1,dim(curr_ncurr_liab)[1],2),color = "white",background = " #2980b9 ")  %>% row_spec(seq(2,dim(curr_ncurr_liab)[1],2),color = "black",background = " #d6eaf8 ")
+```
+
+
+## 6 Further Analysis
+
+### 6.1 Sensitivity Analysis
+
+```{r Sensitivity Analysis}
+
+
+ggplot(data = amounts_df,aes(x=amounts_header,y=amounts))+geom_col(fill="#AED6F1")+ggtitle("PVO with actuarial assumptions tweaked")+xlab("Changes in Assumptions")+ylab("PVO Discounted in Lakhs INR") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+### 6.2 Distribution of PVO
+
+```{r Distribution of PVO}
+
+emp_data$benefits<-future_ex_benefit
+Obligation_Annually_undis<-rep(0,(retire_age-17))
+for(i in 1:(retire_age-17))
+{
+  Obligation_Annually_undis[i]=sum(total_obligation[i,]*(1+assump[1,2])^i)
+}
+
+barplot(height=Obligation_Annually_undis/100000,names.arg = 0:(retire_age-18),xlab = "Year of Projection",ylab = "Expected Payout (Undiscounted) in Lakhs INR",col = "#D7BDE2")
+
+treemap(emp_data,index = "decade",vSize = "benefits",title = "Distribution of Obligation (Undiscounted) age wise",title.legend = "Decade of life",algorithm = "squarified")
+
+treemap(emp_data,index = "PS",vSize = "benefits",title = "Distribution of Obligation (Undiscounted) Past Service wise",title.legend = "Past Service",algorithm = "squarified")
+
+ggplot(data = emp_data, aes(x=Total.Salary.for.Gratuity,fill=decade))+geom_histogram(binwidth = as.integer(mean(emp_data$Total.Salary.for.Gratuity)/3))+xlim(c(min(emp_data$Total.Salary.for.Gratuity),max(emp_data$Total.Salary.for.Gratuity)))+xlab("Salary at the Date of Valuation")+ylab("Number of Employees")+labs(title = "Decade of life")
+
+
+```
